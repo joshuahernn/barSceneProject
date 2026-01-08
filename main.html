@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html>
+<head><title>My first triangle</title>
+    <style>
+        #the-canvas { border: 1px solid rgb(185, 211, 36); }
+        </style>
+
+
+<script src="vector_template.js"></script>
+<script src="matrix_template.js"></script>
+<script src="lib.js"></script>
+<script src="mesh_template.js"></script>
+
+</head>
+<body>
+
+<p></p>
+<canvas id = "the-canvas" width = "1920" height = "1080"></canvas>
+
+
+<script>
+
+let canvas = document.getElementById('the-canvas');
+console.log(canvas);
+
+
+/** @type {WebGLRenderingContext} */
+let gl = canvas.getContext('webgl2');
+let tex_front, tex_back, tex_left, tex_right, tex_top, tex_bottom;
+
+
+let verts = new Float32Array([      // rgb
+    -0.5,-0.5,0,   1,0,0,   // red
+     0.5,-0.5,0,   0,0,1,   // blue
+     0.5, 0.5,0,   0,1,0,   // green
+
+    -0.5,-0.5,0,   1,0,0,   // red
+     0.5, 0.5,0,   0,1,0,   // green
+    -0.5, 0.5,0,   1,1,0    // red green.
+]);
+
+
+
+let vertex_buffer = gl.createBuffer();
+gl.bindBuffer( gl.ARRAY_BUFFER, vertex_buffer);
+gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+
+
+// source https://learnopengl.com/Lighting/Multiple-lights?
+// source for transparency https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/blendFunc (counted as a advnaced extra feature)
+let vertex_source =
+`#version 300 es
+precision mediump float;
+
+// matrices
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 proj;
+
+// material
+uniform float mat_ambient;
+uniform float mat_diffuse;
+uniform float mat_specular;
+uniform float mat_shininess;
+
+// directional light
+uniform vec3 sun_dir;
+uniform vec3 sun_color;
+
+// point light
+uniform vec3 point_pos;
+uniform vec3 point_color;
+uniform float point_attenuation_linear;
+uniform float point_attenuation_quadratic;
+
+// camera position (world space)
+uniform vec3 cam_pos;
+uniform int  flip_normals;   
+
+in vec3 coordinates;
+in vec4 color;
+in vec2 uv;
+in vec3 normal;
+
+out vec2 v_uv;
+out vec4 v_color;
+
+vec3 diff_color(vec3 n, vec3 l, vec3 light_color, float k_diff) {
+    return k_diff * light_color * max(dot(n, l), 0.0);
+}
+
+void main(void) {
+    // world pos
+    vec4 world_pos4 = model * vec4(coordinates, 1.0);
+    vec3 world_pos  = world_pos4.xyz;
+
+    vec3 n = normalize(mat3(model) * normal);
+    if (flip_normals == 1) {   
+        n = -n;
+    }
+
+
+    // view
+    vec3 v = normalize(cam_pos - world_pos);
+
+    // light
+    vec3 Lsun = normalize(sun_dir);
+    vec3 sun_diffuse  = diff_color(n, Lsun, sun_color, mat_diffuse);
+    vec3 sun_reflect  = reflect(-Lsun, n);
+    float sun_spec    = pow(max(dot(sun_reflect, v), 0.0), mat_shininess);
+    vec3 sun_specular = mat_specular * sun_color * sun_spec;
+
+    // point light
+    vec3 to_point = point_pos - world_pos;
+    float dist    = length(to_point);
+    vec3 Lpoint   = to_point / dist;
+
+    float attenuation = 1.0 / (1.0 +
+        point_attenuation_linear * dist +
+        point_attenuation_quadratic * dist * dist);
+
+    vec3 point_diffuse  = diff_color(n, Lpoint, point_color, mat_diffuse) * attenuation;
+    vec3 point_reflect  = reflect(-Lpoint, n);
+    float point_spec    = pow(max(dot(point_reflect, v), 0.0), mat_shininess);
+    vec3 point_specular = mat_specular * point_color * point_spec * attenuation;
+
+    // lighting
+    vec3 lighting = vec3(mat_ambient) +
+                    sun_diffuse + sun_specular +
+                    point_diffuse + point_specular;
+
+    v_color = vec4(lighting, color.a);
+    v_uv    = uv;
+
+    gl_Position = proj * view * world_pos4;
+}
+
+`;
+
+
+let fragment_source =
+`#version 300 es
+precision mediump float;
+
+in vec4 v_color;
+in vec2 v_uv;
+
+uniform sampler2D tex_0;
+uniform float u_alpha; 
+
+out vec4 f_color;
+
+void main(void) {
+    vec4 texColor = texture(tex_0, v_uv);
+    vec4 base = v_color * texColor;
+
+    // global alpha
+    float alpha = clamp(u_alpha * base.a, 0.0, 1.0);
+    f_color = vec4(base.rgb, alpha);
+}
+
+`;
+
+
+
+// Make sure to enable depth testing with:
+gl.enable(gl.DEPTH_TEST);
+
+// And make sure to clear the depth buffer when you clear the screen:
+gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+
+const vshader = gl.createShader(gl.VERTEX_SHADER);
+const fshader = gl.createShader(gl.FRAGMENT_SHADER);
+
+
+
+gl.shaderSource(vshader, vertex_source);
+gl.shaderSource(fshader, fragment_source);
+
+
+gl.compileShader(vshader );
+gl.compileShader(fshader );
+
+
+const program = gl.createProgram();
+gl.attachShader(program, vshader);
+gl.attachShader(program, fshader);
+gl.linkProgram(program);
+
+
+gl.useProgram(program);
+const sampler_loc = gl.getUniformLocation(program, "tex_0");
+gl.uniform1i(sampler_loc, 0);
+
+const flipNormalsLoc  = gl.getUniformLocation(program, "flip_normals"); 
+
+// for transparency
+const alphaLoc = gl.getUniformLocation(program, "u_alpha");
+gl.uniform1f(alphaLoc, 1.0);   // default
+
+
+// transparency blending
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+
+function loadTexture(gl, url) {
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                new Uint8Array([255, 0, 255, 255]));
+
+  const image = new Image();
+  image.onload = function() {
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                  gl.RGBA, gl.UNSIGNED_BYTE, image);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  };
+  image.src = url;
+  return texture;
+}
+
+
+// 1. Define names and file paths in ONE place
+const textureDefs = {
+  room_black:   "textures/extradirtywall.jpg",
+  cube_water:   "textures/metal.png",
+  lamp_tex:     "textures/whitebulb.jpg",
+  barrel_tex:   "textures/darkwood.jpg",
+  wall_wood:    "textures/woodwall.jpg",
+  room_floor:   "textures/concretefloor.jpg",
+  room_ceiling: "textures/woodceiling.jpg",
+  bottle_tex:   "textures/beerBottletex.jpg",
+  silver_bar:   "textures/newSilver.png",
+  crushed_tex:  "textures/crushedMesh.png"
+};
+
+
+const textures = {};
+for (const [name, url] of Object.entries(textureDefs)) {
+  textures[name] = loadTexture(gl, url);
+}
+
+
+function setMeshTexture(mesh, texName) {
+  mesh.material = { 
+    texture: textures[texName] 
+
+  };
+  
+}
+
+// room
+const room = Mesh.box(gl, program, 60, 30, 60);
+
+room.textures = {
+  front:  textures.wall_wood,     
+  back:   textures.wall_wood,     
+  left:   textures.wall_wood,     
+  right:  textures.wall_wood,     
+  top:    textures.room_ceiling,    
+  bottom: textures.room_floor     
+};
+
+
+// ceiling fans
+const fanHub   = Mesh.box(gl, program, 0.6, 0.25, 0.6);
+const fanBlade = Mesh.box(gl, program, 4.0, 0.1, 0.4);
+const fanPos   = { x: 0, y: 13.5, z: 0 };
+
+setMeshTexture(fanHub,   "barrel_tex");  
+setMeshTexture(fanBlade, "barrel_tex");
+
+
+
+let modelFanHub = Mat4.identity();   
+
+gl.enable(gl.DEPTH_TEST);
+
+
+/** Sets uniform data for a row-major matrix4
+@param {WebGLRenderingContext} gl
+@param {WebGLProgram} program
+@param {string} name
+@param {number[]} data */
+function set_uniform_matrix4( gl, program, name, data ) {
+const loc = gl.getUniformLocation( program, name );
+
+gl.uniformMatrix4fv( loc, true, data );
+}
+
+function set_uniform_1f(gl, program, name, value) {
+  const loc = gl.getUniformLocation(program, name);
+  gl.uniform1f(loc, value);
+}
+
+function set_uniform_3f(gl, program, name, x, y, z) {
+  const loc = gl.getUniformLocation(program, name);
+  gl.uniform3f(loc, x, y, z);
+}
+
+
+class Keys {
+    constructor() {
+        this.keys_down = {};
+    }
+
+    static start_listening() {
+        let keys = new Keys();
+
+        addEventListener('keydown', function(ev) {
+            if (typeof ev.code === 'string') {
+                keys.keys_down[ev.code] = true;
+            }
+        });
+
+        addEventListener('keyup', function(ev) {
+            if (typeof ev.code === 'string') {
+                keys.keys_down[ev.code] = false;
+            }
+        });
+
+        return keys;
+    }
+
+    is_key_down(code) {
+        return !!this.keys_down[code];
+    }
+
+    is_key_up(code) {
+        return !this.keys_down[code];
+    }
+
+    // list all currently pressed keys
+    keys_down_list() {
+        return Object.entries(this.keys_down)
+            .filter(kv => kv[1])
+            .map(kv => kv[0]);
+    }
+}
+
+
+class Camera {
+  constructor() {
+    this.x = 0; this.y = 0; this.z = 0;
+    this.roll = 0.0;   // XY rotation
+    this.pitch = 0.0;  // YZ rotation
+    this.yaw = 0.0;    // XZ rotation
+  }
+
+
+  model_matrix() {
+    const T  = Mat4.translation(this.x, this.y, this.z);
+    const Ry = Mat4.rotation_xz(this.yaw);
+    const Rp = Mat4.rotation_yz(this.pitch);
+    const Rr = Mat4.rotation_xy(this.roll);
+    return T.mul(Rr).mul(Rp).mul(Ry);
+  }
+
+  view_matrix() {
+    return Mat4.rotation_xy(-this.roll)
+      .mul(Mat4.rotation_yz(-this.pitch))
+      .mul(Mat4.rotation_xz(-this.yaw))
+      .mul(Mat4.translation(-this.x, -this.y, -this.z));
+  }
+}
+
+
+
+const camera = new Camera();
+camera.z = 0.0;
+camera.y = 0.0;
+
+
+const keys = Keys.start_listening();
+
+const DESIRED_TICK_RATE = 60;
+const DESIRED_MSPT = 1000 / DESIRED_TICK_RATE;
+const DT = 1 / DESIRED_TICK_RATE;
+
+
+
+const moveSpeed = 20.0;
+const turnSpeed = 0.40;
+const radiusTurn = Math.PI * 2.0;
+
+function update() {
+
+  if (keys.is_key_down('ArrowLeft'))
+    camera.yaw   -= turnSpeed * DT;
+
+  if (keys.is_key_down('ArrowRight'))
+    camera.yaw   += turnSpeed * DT;
+
+  if (keys.is_key_down('ArrowUp'))
+    camera.pitch -= turnSpeed * DT;  // look down
+
+  if (keys.is_key_down('ArrowDown'))
+    camera.pitch += turnSpeed * DT;  // look up
+
+    // roll
+  if (keys.is_key_down('KeyQ'))
+    camera.roll  -= 0.15 * DT;
+  if (keys.is_key_down('KeyE'))
+    camera.roll  += 0.15 * DT;
+
+
+  const yawRad = camera.yaw * radiusTurn;
+  const forwardX   = Math.sin(yawRad);
+  const forwardZ   = Math.cos(yawRad);
+  const rightX = Math.cos(yawRad);
+  const rightZ = -Math.sin(yawRad);
+
+  let vx = 0, vy = 0, vz = 0;
+
+  if (keys.is_key_down('KeyW')) {
+    vx += forwardX * moveSpeed * DT; vz += forwardZ * moveSpeed * DT; }
+
+  if (keys.is_key_down('KeyS')) {
+    vx -= forwardX * moveSpeed * DT; vz -= forwardZ * moveSpeed * DT; }
+
+  if (keys.is_key_down('KeyA')) {
+    vx -= rightX * moveSpeed * DT; vz -= rightZ * moveSpeed * DT; }
+
+  if (keys.is_key_down('KeyD')) {
+    vx += rightX * moveSpeed * DT; vz += rightZ * moveSpeed * DT; }
+
+  if (keys.is_key_down('Space')) {
+    vy += moveSpeed * DT; }
+
+  if (keys.is_key_down('KeyC'))  {
+    vy -= moveSpeed * DT; }
+
+  camera.x += vx; camera.y += vy; camera.z += vz;
+}
+
+setInterval(update, DESIRED_MSPT);
+let lampMesh = null;
+let barrelMesh = null;
+let barStandMesh = null;
+let stoolMesh = null;
+let bottleMesh = null;
+let silverMesh = null;
+let spilledMesh = null;
+let crushedMesh = null;
+
+
+Mesh.from_obj_file(gl, "objs/lightbulbfinal.obj", program, function(mesh) {
+    console.log("OBJ loaded!", mesh);
+    lampMesh = mesh;
+    setMeshTexture(lampMesh, "lamp_tex");  
+});
+
+Mesh.from_obj_file(gl, "objs/BarrelTable_tri.obj", program, function(mesh) {
+    console.log("OBJ bar loaded!", mesh);
+    barrelMesh = mesh;
+    setMeshTexture(barrelMesh, "barrel_tex");
+});
+
+Mesh.from_obj_file(gl, "objs/barStand_tri.obj", program, function(mesh) {
+    console.log("Bar Stand loaded!", mesh);
+    barStandMesh = mesh;
+    setMeshTexture(barStandMesh, "barrel_tex");
+});
+
+Mesh.from_obj_file(gl, "objs/stool_tri.obj", program, function(mesh) {
+    console.log("Stool loaded!", mesh);
+    stoolMesh = mesh;
+    setMeshTexture(stoolMesh, "barrel_tex");
+});
+
+
+Mesh.from_obj_file(gl, "objs/newBeerBottle_tri.obj", program, function(mesh) {
+    console.log("Stool loaded!", mesh);
+    bottleMesh = mesh;
+    setMeshTexture(bottleMesh, "bottle_tex");
+});
+
+Mesh.from_obj_file(gl, "objs/beerTap_tri.obj", program, function(mesh) {
+    console.log("OBJ loaded!", mesh);
+    silverMesh = mesh;
+    setMeshTexture(silverMesh, "silver_bar");
+});
+
+
+Mesh.from_obj_file(gl, "objs/spilledWater.obj", program, function(mesh) {
+    console.log("OBJ loaded!", mesh);
+    spilledMesh = mesh;
+    setMeshTexture(spilledMesh, "bottle_tex");
+});
+
+
+Mesh.from_obj_file(gl, "objs/lowpolycrush_tri.obj", program, function(mesh) {
+    console.log("OBJ loaded!", mesh);
+    crushedMesh = mesh;
+    setMeshTexture(crushedMesh, "crushed_tex");  
+});
+
+
+const barStands = [
+    { pos: {x: 20, y: -15, z: 30}, scale: 0.1,  rot: 0.75 }
+];
+
+
+const barrels = [
+  { pos: {x: -17, y: -15, z:  20},  scale: 10.0 },
+  { pos: {x:  0, y: -15, z: -0}, scale: 10.0 },
+  { pos: {x:  17, y: -15 , z:  -20}, scale: 10.0 },
+];
+
+const stools = [
+  { pos: {x:  10,  y: -15, z:   25}, scale: 2.0, rot: 0.50 },  
+  { pos: {x:  10,  y: -15, z:   20}, scale: 2.0, rot: 0.25 },  
+  { pos: {x:  10,  y: -15, z:    15}, scale: 2.0, rot: 0.75 }   
+];
+
+const beerBottles = [
+    { pos: {x: 3, y: -6, z: 0}, scale: 2,  rot: 0.75 },
+    { pos: {x: -3, y: -6, z: 0}, scale: 2,  rot: 0.75 },
+    { pos: {x: 15, y: -5, z: 25}, scale: 2,  rot: 0.75 },
+    { pos: {x: -15, y: -6, z: 20}, scale: 2,  rot: 0.75 }
+];
+
+const drinkPour = [
+    { pos: {x: 15, y: -2, z: 21}, scale: 0.4,  rot: 1 },
+    { pos: {x: 15, y: -2, z: 18}, scale: 0.4,  rot: 1 }
+];
+
+const spilledWaterMess = [
+    { pos: {x: -15, y: -14, z: 5}, scale: 4,  rot: 1 }
+];
+
+const crushedBud = [
+    { pos: {x: -13, y: -14, z: 5}, scale: 0.2,  rot: 1 }
+];
+
+
+let start = null;
+function render(now) {
+  requestAnimationFrame(render);
+  if (start === null) start = now;
+  const t = (now - start) * 0.001;
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  const aspect = canvas.width / canvas.height;
+  const near = 4.0, far = 200.0;
+
+  const fovy = Math.PI / 2;
+  const top = Math.tan(fovy * 0.5) * near;
+  const bottom = -top;
+  const right = top * aspect;
+  const left = -right;
+  const proj = Mat4.frustum(left, right, bottom, top, near, far);
+
+  const turns = 0.0 * t;
+  const R = Mat4.rotation_xz(turns);
+  const S = Mat4.scale(4, 4, 4);
+  const T = Mat4.translation(0, 0, 10);
+  const model = T.mul(R).mul(S);
+
+  const view = camera.view_matrix();
+
+  set_uniform_matrix4(gl, program, "model", model.data);
+  set_uniform_matrix4(gl, program, "view",  view.data);
+  set_uniform_matrix4(gl, program, "proj",  proj.data);
+
+  set_uniform_3f(gl, program, "cam_pos", camera.x, camera.y, camera.z);
+
+  // flickering light 
+  const baseR = 20.0, baseG = 18.0, baseB = 16.0;
+
+  const cycle = t % 7.0;
+  let flicker = 0.0;
+
+  if (cycle < 0.20) {
+    flicker = 3.0;                // flash 1
+  } else if (cycle < 0.30) {
+    flicker = 0.0;                // pause
+  } else if (cycle < 0.50) {
+    flicker = 3.0;                // flash 2
+  } else if (cycle < 5.50) {
+    flicker = 3.0;                // on
+  } else {
+    flicker = Math.random() * 0.8; // shaky 
+  }
+
+
+const flickNorm = Math.min(flicker / 3.0, 1.0);
+
+// bulb + inner glow brightness based on light flicker
+const bulbAmb  = 0.2 + 0.8 * flickNorm;  
+const glowAmb  = 0.5 + 2.0 * flickNorm;   
+
+
+  // bulb 
+  const bulbOffsetY = -5.0;
+  const lampPos = {
+    x: fanPos.x,
+    y: fanPos.y + bulbOffsetY,
+    z: fanPos.z
+  };
+
+  set_uniform_3f(gl, program, "point_pos",
+                 lampPos.x, lampPos.y, lampPos.z);
+
+  set_uniform_3f(gl, program, "point_color",
+      baseR * flicker,
+      baseG * flicker,
+      baseB * flicker
+  );
+
+  set_uniform_1f(gl, program, "point_attenuation_linear",    0.05);
+  set_uniform_1f(gl, program, "point_attenuation_quadratic", 0.01);
+
+
+
+  // draw room
+  {
+    const roomModel = Mat4.identity();
+    set_uniform_matrix4(gl, program, "model", roomModel.data);
+
+    gl.uniform1i(flipNormalsLoc, 1);  // inward normals
+
+    set_uniform_1f(gl, program, "mat_ambient", 0.01);
+    set_uniform_1f(gl, program, "mat_diffuse", 0.2);
+    set_uniform_1f(gl, program, "mat_specular", 2.5);
+    set_uniform_1f(gl, program, "mat_shininess", 16.0);
+
+    gl.cullFace(gl.FRONT);
+    room.render(gl);
+  }
+
+// draw barrel 
+if (barrelMesh) {
+    barrels.forEach(b => {
+        const T = Mat4.translation(b.pos.x, b.pos.y, b.pos.z);
+        const S = Mat4.scale(b.scale, b.scale, b.scale);
+        const modelBarrel = T.mul(S);
+
+        set_uniform_matrix4(gl, program, "model", modelBarrel.data);
+        gl.uniform1i(flipNormalsLoc, 0);
+
+        set_uniform_1f(gl, program, "mat_ambient",   0.3);
+        set_uniform_1f(gl, program, "mat_diffuse",   0.6);
+        set_uniform_1f(gl, program, "mat_specular",  0.2);
+        set_uniform_1f(gl, program, "mat_shininess", 16.0);
+
+        barrelMesh.render(gl);
+    });
+}
+
+
+if (barStandMesh) {
+    barStands.forEach(obj => {
+
+        const T = Mat4.translation(obj.pos.x, obj.pos.y, obj.pos.z);
+        const R = Mat4.rotation_xz(obj.rot);    
+        const S = Mat4.scale(obj.scale, obj.scale, obj.scale);
+
+        const modelBarStand = T.mul(R).mul(S);
+
+        set_uniform_matrix4(gl, program, "model", modelBarStand.data);
+        gl.uniform1i(flipNormalsLoc, 0);
+
+        set_uniform_1f(gl, program, "mat_ambient",   0.20);
+        set_uniform_1f(gl, program, "mat_diffuse",   0.55);
+        set_uniform_1f(gl, program, "mat_specular",  0.15);
+        set_uniform_1f(gl, program, "mat_shininess", 12.0);
+
+        barStandMesh.render(gl);
+    });
+}
+
+// stools around table 
+if (stoolMesh) {
+    stools.forEach(obj => {
+        const T = Mat4.translation(obj.pos.x, obj.pos.y, obj.pos.z);
+        const R = Mat4.rotation_xz(obj.rot);         
+        const S = Mat4.scale(obj.scale, obj.scale, obj.scale);
+
+        const modelStool = T.mul(R).mul(S);
+
+        set_uniform_matrix4(gl, program, "model", modelStool.data);
+        gl.uniform1i(flipNormalsLoc, 0);
+
+        set_uniform_1f(gl, program, "mat_ambient",   0.20);
+        set_uniform_1f(gl, program, "mat_diffuse",   0.60);
+        set_uniform_1f(gl, program, "mat_specular",  0.25);
+        set_uniform_1f(gl, program, "mat_shininess", 16.0);
+
+        stoolMesh.render(gl);
+    });
+}
+
+
+// beer bottles 
+if (bottleMesh) {
+    beerBottles.forEach(b => {
+        const T = Mat4.translation(b.pos.x, b.pos.y, b.pos.z);
+        const S = Mat4.scale(b.scale, b.scale, b.scale);
+        const modelBottle = T.mul(S);
+
+        set_uniform_matrix4(gl, program, "model", modelBottle.data);
+        gl.uniform1i(flipNormalsLoc, 0);
+
+        set_uniform_1f(gl, program, "mat_ambient",   0.3);
+        set_uniform_1f(gl, program, "mat_diffuse",   0.4);
+        set_uniform_1f(gl, program, "mat_specular",  0.8);
+        set_uniform_1f(gl, program, "mat_shininess", 32.0);
+
+        // transparent
+        gl.depthMask(false);          
+        gl.uniform1f(alphaLoc, 0.1);  // 0.0 = fully invisible, 1.0 = opaque
+
+        bottleMesh.render(gl);
+
+        gl.depthMask(true);
+        gl.uniform1f(alphaLoc, 1.0);
+    });
+}
+
+// beer tap 
+if (silverMesh) {
+    drinkPour.forEach(obj => {
+        const T = Mat4.translation(obj.pos.x, obj.pos.y, obj.pos.z);
+        const R = Mat4.rotation_xz(obj.rot);        
+        const S = Mat4.scale(obj.scale, obj.scale, obj.scale);
+
+        const modelStool = T.mul(R).mul(S);
+
+        set_uniform_matrix4(gl, program, "model", modelStool.data);
+        gl.uniform1i(flipNormalsLoc, 0);
+
+        set_uniform_1f(gl, program, "mat_ambient",   0.20);
+        set_uniform_1f(gl, program, "mat_diffuse",   0.60);
+        set_uniform_1f(gl, program, "mat_specular",  0.25);
+        set_uniform_1f(gl, program, "mat_shininess", 16.0);
+
+        silverMesh.render(gl);
+    });
+}
+
+
+// spilled water 
+if (spilledMesh) {
+    spilledWaterMess.forEach(b => {
+        const T = Mat4.translation(b.pos.x, b.pos.y, b.pos.z);
+        const S = Mat4.scale(b.scale, b.scale, b.scale);
+        const modelSpill = T.mul(S);   
+
+
+        set_uniform_matrix4(gl, program, "model", modelSpill.data);
+        gl.uniform1i(flipNormalsLoc, 0);
+
+        set_uniform_1f(gl, program, "mat_ambient",   .5);
+        set_uniform_1f(gl, program, "mat_diffuse",   0.4);
+        set_uniform_1f(gl, program, "mat_specular",  0.08);
+        set_uniform_1f(gl, program, "mat_shininess", 8.0);
+
+        gl.depthMask(false);          
+        gl.uniform1f(alphaLoc, 0.1);  // 0.0 = fully invisible, 1.0 = opaque
+
+     
+        spilledMesh.render(gl);
+
+        gl.depthMask(true);
+        gl.uniform1f(alphaLoc, 1.0);
+    });
+}
+
+
+// crushed can 
+if (crushedMesh) {
+    crushedBud.forEach(obj => {
+        const T = Mat4.translation(obj.pos.x, obj.pos.y, obj.pos.z);
+        const R = Mat4.rotation_xz(obj.rot);         
+        const S = Mat4.scale(obj.scale, obj.scale, obj.scale);
+
+        const modelCan = T.mul(R).mul(S);
+
+        set_uniform_matrix4(gl, program, "model", modelCan.data);
+        gl.uniform1i(flipNormalsLoc, 0);
+
+        set_uniform_1f(gl, program, "mat_ambient",   0.20);
+        set_uniform_1f(gl, program, "mat_diffuse",   0.60);
+        set_uniform_1f(gl, program, "mat_specular",  0.25);
+        set_uniform_1f(gl, program, "mat_shininess", 16.0);
+
+        crushedMesh.render(gl);
+    });
+}
+
+
+// ceiling fan 
+
+  // speed
+  const fanRevPerSec  = 0.5;
+  const fanAngleTurns = t * fanRevPerSec;  
+
+  {
+    const translateHub = Mat4.translation(fanPos.x, fanPos.y, fanPos.z);
+    const rotateHub = Mat4.rotation_xz(fanAngleTurns); // rotate around Y
+    const scaleHub = Mat4.scale(1.0, 1.0, 1.0);
+
+    modelFanHub = translateHub.mul(rotateHub).mul(scaleHub);
+
+    // draw hub
+    set_uniform_matrix4(gl, program, "model", modelFanHub.data);
+    gl.uniform1i(flipNormalsLoc, 0);
+
+    set_uniform_1f(gl, program, "mat_ambient",   0.1);
+    set_uniform_1f(gl, program, "mat_diffuse",   0.05);
+    set_uniform_1f(gl, program, "mat_specular",  0.01);
+    set_uniform_1f(gl, program, "mat_shininess", 8.0);
+
+    gl.cullFace(gl.BACK);
+    fanHub.render(gl);
+
+    // blades at 0°, 90°, 180°, 270°
+    const bladeAnglesTurns = [0.0, 0.25, 0.5, 0.75];
+
+    for (let i = 0; i < bladeAnglesTurns.length; i++) {
+      const turn = bladeAnglesTurns[i];
+
+      const rotationBladeOffset = Mat4.rotation_xz(turn);
+      const translateBlade      = Mat4.translation(2.5, 0.0, 0.0); // outward
+      const scaleBlade      = Mat4.scale(2.0, 0.1, 1.2);      // long & thin
+
+      const modelBlade = modelFanHub
+        .mul(rotationBladeOffset)
+        .mul(translateBlade)
+        .mul(scaleBlade);
+
+      set_uniform_matrix4(gl, program, "model", modelBlade.data);
+      gl.uniform1i(flipNormalsLoc, 0);
+
+
+    set_uniform_1f(gl, program, "mat_ambient",   0.1);
+    set_uniform_1f(gl, program, "mat_diffuse",   0.06);
+    set_uniform_1f(gl, program, "mat_specular",  0.02);
+    set_uniform_1f(gl, program, "mat_shininess", 16.0);
+
+    fanBlade.render(gl);
+
+    }
+  }
+
+// bulb 
+if (lampMesh) {
+  const Tbulb    = Mat4.translation(0, bulbOffsetY, 0);
+  const Sbulb    = Mat4.scale(0.05, 0.05, 0.05);
+  const modelBulb = modelFanHub.mul(Tbulb).mul(Sbulb);
+
+
+  set_uniform_matrix4(gl, program, "model", modelBulb.data);
+  gl.uniform1i(flipNormalsLoc, 0);
+
+  set_uniform_1f(gl, program, "mat_ambient",   bulbAmb);
+  set_uniform_1f(gl, program, "mat_diffuse",   0.0);
+  set_uniform_1f(gl, program, "mat_specular",  0.0);
+  set_uniform_1f(gl, program, "mat_shininess", 8.0);
+
+  lampMesh.render(gl);
+
+  set_uniform_1f(gl, program, "mat_ambient",   glowAmb);
+  set_uniform_1f(gl, program, "mat_diffuse",   0.0);
+  set_uniform_1f(gl, program, "mat_specular",  0.0);
+
+}
+
+}
+
+
+window.requestAnimationFrame(render);
+</script>
+</body>
+</html>
